@@ -166,7 +166,7 @@ def build_pdf(prob_success: float, median_wealth: float, target: float, fig) -> 
     pdf.multi_cell(0, 6, _safe(disclaimer))
 
     # FPDF.output(dest="S") returns str (latin‑1). Encode to bytes once.
-    return pdf.output(dest="S").encode("latin-1")(dest="S").encode("latin-1")
+    return pdf.output(dest="S").encode("latin-1")
 
 
 # ────────────────────────────────────────────────────────────────────────────────
