@@ -122,7 +122,8 @@ def simulate_paths(
 # ────────────────────────────────────────────────────────────────────────────────
 
 def _safe(txt: str) -> str:
-    """Encode text to latin-1 compatible, replacing unsupported chars."""
+    """Encode text to latin‑1, replacing unsupported chars; map € to 'EUR'."""
+    txt = txt.replace("€", "EUR")
     return txt.encode("latin-1", "replace").decode("latin-1")
 
 
@@ -158,9 +159,14 @@ def build_pdf(prob_success: float, median_wealth: float, target: float, fig) -> 
 
     pdf.ln(2)
     pdf.set_font("Helvetica", size=8)
-    pdf.multi_cell(0, 6, "Simulazione illustrativa basata su ipotesi di mercato e volatilità ipotetiche. Non costituisce garanzia di risultato.")
+    disclaimer = (
+        "Simulazione illustrativa basata su ipotesi di mercato e volatilita ipotetiche. "
+        "Non costituisce garanzia di risultato."
+    )
+    pdf.multi_cell(0, 6, _safe(disclaimer))
 
-    return pdf.output(dest="S").encode("latin-1")
+    # FPDF.output(dest="S") returns str (latin‑1). Encode to bytes once.
+    return pdf.output(dest="S").encode("latin-1")(dest="S").encode("latin-1")
 
 
 # ────────────────────────────────────────────────────────────────────────────────
