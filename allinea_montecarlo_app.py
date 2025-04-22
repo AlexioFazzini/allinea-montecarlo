@@ -1,25 +1,34 @@
-"""ALLINEA Monte Carlo Stress‑Test – Streamlit app
+"""ALLINEA Monte Carlo Stress‑Test – Streamlit app
 Author: ChatGPT – April 2025
 Description: interactive tool to estimate the probability of hitting a savings/wealth
-            goal within a chosen horizon using Monte Carlo simulation, with a basic
-            stress‑layer and downloadable results.
+            goal within a chosen horizon using Monte Carlo simulation, with optional
+            withdrawal shock and downloadable CSV / PDF report.
 """
 
 import io
+import tempfile
+from datetime import date
+
 import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 
+# Try import FPDF; if unavailable user must add to requirements.txt
+try:
+    from fpdf import FPDF
+except ImportError:  # graceful fallback
+    FPDF = None
+
 # ────────────────────────────────────────────────────────────────────────────────
 # Streamlit page config & branding
 # ────────────────────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="ALLINEA Monte Carlo Stress‑Test", layout="wide")
+st.set_page_config(page_title="ALLINEA Monte Carlo Stress‑Test", layout="wide")
 
-st.title("ALLINEA – Monte Carlo Stress‑Test")
+st.title("ALLINEA – Monte Carlo Stress‑Test")
 st.write(
     "Valuta la probabilità di raggiungere un obiettivo di patrimonio entro un dato orizzonte, "
-    "simulando migliaia di scenari di mercato, con la possibilità di applicare stress test."
+    "simulando migliaia di scenari di mercato e opzionalmente un prelievo straordinario."
 )
 
 # ────────────────────────────────────────────────────────────────────────────────
@@ -40,10 +49,26 @@ with st.sidebar:
     )
 
     st.markdown("---")
-    st.header("Ipotesi di mercato")
-    exp_return = st.slider("Rendimento atteso (μ)", 0.00, 0.15, 0.05, 0.005, format="%.3f")
-    volatility = st.slider("Volatilità (σ)", 0.00, 0.30, 0.10, 0.005, format="%.3f")
-    inflation = st.slider("Inflazione media", 0.00, 0.10, 0.02, 0.005, format="%.3f")
+    st.header("Ipotesi di mercato (in % annuo)")
+    exp_return_pct = st.slider("Rendimento atteso (%)", 0.0, 15.0, 5.0, 0.1, format="%.1f")
+    volatility_pct = st.slider("Volatilità (%)", 0.0, 30.0, 10.0, 0.1, format="%.1f")
+    inflation_pct = st.slider("Inflazione media (%)", 0.0, 10.0, 2.0, 0.1, format="%.1f")
+
+    # Convert to decimals
+    exp_return = exp_return_pct / 100
+    volatility = volatility_pct / 100
+    inflation = inflation_pct / 100
+
+    st.markdown("---")
+    st.header("Shock di prelievo opzionale")
+    use_withdrawal = st.checkbox("Simula un prelievo futuro")
+    if use_withdrawal:
+        withdrawal_year = st.slider("Anno del prelievo", min_value=1, max_value=years - 1, value=int(years / 2))
+        withdrawal_amount = st.number_input(
+            "Importo prelievo (€)", min_value=1_000, max_value=10_000_000, value=50_000, step=1_000
+        )
+    else:
+        withdrawal_year, withdrawal_amount = None, 0.0
 
     st.markdown("---")
     st.header("Impostazioni avanzate")
@@ -53,13 +78,26 @@ with st.sidebar:
     run_button = st.button("Esegui Stress‑Test", type="primary")
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Monte Carlo engine
+# Monte Carlo engine
 # ────────────────────────────────────────────────────────────────────────────────
 
-def simulate_paths(mu: float, sigma: float, years: int, init_cap: float, contrib: float,
-                   inflation: float = 0.02, n_sims: int = 10_000, fat_tail: bool = False,
-                   df: int = 5) -> pd.DataFrame:
-    """Return DataFrame (years+1 × n_sims) with wealth evolution."""
+def simulate_paths(
+    mu: float,
+    sigma: float,
+    years: int,
+    init_cap: float,
+    contrib: float,
+    inflation: float = 0.02,
+    n_sims: int = 10_000,
+    fat_tail: bool = False,
+    withdrawal_year: int | None = None,
+    withdrawal_amount: float = 0.0,
+    df: int = 5,
+) -> pd.DataFrame:
+    """Return DataFrame (years+1 × n_sims) with wealth evolution.
+
+    Withdrawal is modelled at *start of the specified year* (after contribution, before growth).
+    """
     rng = np.random.default_rng()
     if fat_tail:
         scale = sigma / np.sqrt(df / (df - 2))
@@ -72,8 +110,51 @@ def simulate_paths(mu: float, sigma: float, years: int, init_cap: float, contrib
     paths = np.empty((years + 1, n_sims))
     paths[0] = init_cap
     for t in range(1, years + 1):
-        paths[t] = (paths[t - 1] + contrib) * (1 + real_shocks[t - 1])
+        balance = paths[t - 1] + contrib
+        if withdrawal_year is not None and t == withdrawal_year:
+            balance = np.maximum(balance - withdrawal_amount, 0)  # no shortfall allowed
+        paths[t] = balance * (1 + real_shocks[t - 1])
     return pd.DataFrame(paths)
+
+
+# ────────────────────────────────────────────────────────────────────────────────
+# Helper – build PDF report
+# ────────────────────────────────────────────────────────────────────────────────
+
+def build_pdf(prob_success: float, median_wealth: float, target: float, fig) -> bytes:
+    if FPDF is None:
+        st.error("Modulo FPDF non installato. Aggiungi 'fpdf' a requirements.txt e ripeti.")
+        return b""
+
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=16)
+    pdf.cell(0, 10, "ALLINEA – Monte Carlo Stress‑Test", ln=True, align="C")
+
+    pdf.set_font("Helvetica", size=12)
+    pdf.ln(5)
+    pdf.multi_cell(0, 8, f"Data: {date.today().isoformat()}")
+
+    pdf.ln(4)
+    pdf.multi_cell(0, 8, f"Probabilità di successo: {prob_success:.1%}")
+    pdf.multi_cell(0, 8, f"Patrimonio finale – Mediana: € {median_wealth:,.0f}")
+    pdf.multi_cell(0, 8, f"Obiettivo: € {target:,.0f}")
+
+    # Save matplotlib fig to bytes and embed
+    img_buf = io.BytesIO()
+    fig.savefig(img_buf, format="png", dpi=200, bbox_inches="tight")
+    img_buf.seek(0)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+        tmp.write(img_buf.read())
+        tmp.flush()
+        pdf.image(tmp.name, x=10, w=190)
+
+    pdf.ln(2)
+    pdf.set_font("Helvetica", size=8)
+    pdf.multi_cell(0, 6, "Simulazione illustrativa basata su ipotesi di mercato e volatilità ipotetiche. Non costituisce garanzia di risultato.")
+
+    return pdf.output(dest="S").encode("latin-1")
 
 
 # ────────────────────────────────────────────────────────────────────────────────
@@ -90,6 +171,8 @@ if run_button:
         inflation=inflation,
         n_sims=n_sims,
         fat_tail=fat_tail,
+        withdrawal_year=withdrawal_year,
+        withdrawal_amount=withdrawal_amount,
     )
 
     final_vals = paths.iloc[-1]
@@ -109,9 +192,12 @@ if run_button:
     ax.fill_between(years_axis, percentiles[0.25], percentiles[0.75], alpha=0.4, label="25°‑75°")
     ax.plot(years_axis, percentiles[0.5], linewidth=2, label="Mediana")
     ax.axhline(target, linestyle="--", linewidth=1.2, label="Obiettivo")
+    if use_withdrawal:
+        ax.axvline(withdrawal_year, color="black", linestyle=":", linewidth=1, label="Prelievo")
+        ax.text(withdrawal_year + 0.05, target * 0.95, f"-€ {withdrawal_amount:,.0f}", rotation=90, va="top", fontsize=8)
     ax.set_xlabel("Anno")
     ax.set_ylabel("Patrimonio (€)")
-    ax.set_title("Evoluzione del patrimonio – fan‑chart Monte Carlo")
+    ax.set_title("Evoluzione del patrimonio – fan‑chart Monte Carlo")
     ax.legend()
     st.pyplot(fig)
 
@@ -125,6 +211,18 @@ if run_button:
         mime="text/csv",
     )
 
+    # Download PDF report
+    if FPDF is not None:
+        pdf_bytes = build_pdf(prob_success, final_vals.median(), target, fig)
+        st.download_button(
+            label="Scarica report PDF",
+            data=pdf_bytes,
+            file_name="report_montecarlo.pdf",
+            mime="application/pdf",
+        )
+    else:
+        st.info("Per la funzione PDF occorre aggiungere 'fpdf' a requirements.txt e rilanciare.")
+
     st.markdown("---")
     st.caption(
         "⚠️ *Disclaimer*: simulazione a scopo puramente illustrativo. I risultati si basano su ipotesi di mercato ipotetiche e non garantiscono performance future."
@@ -137,3 +235,4 @@ if run_button:
 # numpy
 # pandas
 # matplotlib
+# fpdf
