@@ -121,7 +121,13 @@ def simulate_paths(
 # Helper – build PDF report
 # ────────────────────────────────────────────────────────────────────────────────
 
+def _safe(txt: str) -> str:
+    """Encode text to latin-1 compatible, replacing unsupported chars."""
+    return txt.encode("latin-1", "replace").decode("latin-1")
+
+
 def build_pdf(prob_success: float, median_wealth: float, target: float, fig) -> bytes:
+    """Generate PDF bytes using FPDF, ensuring latin‑1 compatibility."""
     if FPDF is None:
         st.error("Modulo FPDF non installato. Aggiungi 'fpdf' a requirements.txt e ripeti.")
         return b""
@@ -130,16 +136,16 @@ def build_pdf(prob_success: float, median_wealth: float, target: float, fig) -> 
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
     pdf.set_font("Helvetica", size=16)
-    pdf.cell(0, 10, "ALLINEA – Monte Carlo Stress‑Test", ln=True, align="C")
+    pdf.cell(0, 10, _safe("ALLINEA - Monte Carlo Stress Test"), ln=True, align="C")
 
     pdf.set_font("Helvetica", size=12)
     pdf.ln(5)
-    pdf.multi_cell(0, 8, f"Data: {date.today().isoformat()}")
+    pdf.multi_cell(0, 8, _safe(f"Data: {date.today().isoformat()}"))
 
     pdf.ln(4)
-    pdf.multi_cell(0, 8, f"Probabilità di successo: {prob_success:.1%}")
-    pdf.multi_cell(0, 8, f"Patrimonio finale – Mediana: € {median_wealth:,.0f}")
-    pdf.multi_cell(0, 8, f"Obiettivo: € {target:,.0f}")
+    pdf.multi_cell(0, 8, _safe(f"Probabilita di successo: {prob_success:.1%}"))
+    pdf.multi_cell(0, 8, _safe(f"Patrimonio finale - Mediana: € {median_wealth:,.0f}"))
+    pdf.multi_cell(0, 8, _safe(f"Obiettivo: € {target:,.0f}"))
 
     # Save matplotlib fig to bytes and embed
     img_buf = io.BytesIO()
